@@ -290,3 +290,75 @@ p_my_box <- ggplot(tab_my, aes(x = HER2_group, y = prop, fill = HER2_group)) +
     tip.length = 0.003,
     bracket.size = 0.4
   )
+
+  
+    suppressPackageStartupMessages({
+  library(Seurat)
+  library(dplyr)
+  library(Matrix)
+  library(infercnv)
+})
+
+set.seed(123)
+
+options(future.globals.maxSize = 64 * 1024^3)
+
+stopifnot(exists("Epi_obj"))
+stopifnot(exists("Tcells_obj"))
+
+out_dir <- "results/infercnv_epi_vs_tcells"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+DefaultAssay(Epi_obj) <- "RNA"
+DefaultAssay(Tcells_obj) <- "RNA"
+
+epi_counts <- GetAssayData(Epi_obj, assay = "RNA", layer = "counts")
+t_counts   <- GetAssayData(Tcells_obj, assay = "RNA", layer = "counts")
+
+common_genes <- intersect(rownames(epi_counts), rownames(t_counts))
+
+epi_counts <- epi_counts[common_genes, , drop = FALSE]
+t_counts   <- t_counts[common_genes, , drop = FALSE]
+
+counts_mat <- Matrix::cBind(epi_counts, t_counts)
+
+epi_cells <- colnames(epi_counts)
+t_cells   <- colnames(t_counts)
+
+cell_annot <- tibble(
+  cell = c(epi_cells, t_cells),
+  group = c(rep("Epithelial", length(epi_cells)), rep("T_cells", length(t_cells)))
+)
+
+annotation_file <- file.path(out_dir, "cell_annotations.tsv")
+write.table(
+  cell_annot,
+  file = annotation_file,
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE,
+  col.names = FALSE
+)
+
+gene_order_file <- "resources/gencode_gene_pos_hg38.tsv"
+stopifnot(file.exists(gene_order_file))
+
+infercnv_obj <- infercnv::CreateInfercnvObject(
+  raw_counts_matrix = counts_mat,
+  annotations_file = annotation_file,
+  delim = "\t",
+  gene_order_file = gene_order_file,
+  ref_group_names = c("T_cells")
+)
+
+infercnv_res_dir <- file.path(out_dir, "infercnv_out")
+dir.create(infercnv_res_dir, recursive = TRUE, showWarnings = FALSE)
+
+infercnv_obj <- infercnv::run(
+  infercnv_obj,
+  cutoff = 0.1,
+  out_dir = infercnv_res_dir,
+  cluster_by_groups = TRUE,
+  denoise = TRUE,
+  HMM = TRUE
+)
